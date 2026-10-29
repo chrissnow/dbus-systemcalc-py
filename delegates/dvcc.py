@@ -457,6 +457,13 @@ class DcGenset(BaseCharger):
 	def networkmode(self, v):
 		pass
 
+class Charger(BaseCharger):
+	""" Encapsulates a charger on dbus, such as a mains charger. DVCC does
+	    not control it, but the current it makes is counted, so that the
+	    Multi gets what remains of the charge current limit. Only output 0
+	    is counted: the others usually charge a different battery. """
+	pass
+
 class InverterSubsystem(object):
 	""" Encapsulate collection of inverters. """
 	def __init__(self, monitor):
@@ -522,6 +529,7 @@ class ChargerSubsystem(object):
 		self._inverterchargers = {}
 		self._acsystem0 = None
 		self._otherchargers = {}
+		self._chargers = {}
 
 	def add_solar_charger(self, service):
 		self._solarchargers[service] = charger = SolarCharger(self.monitor, service)
@@ -534,6 +542,10 @@ class ChargerSubsystem(object):
 	def add_dcgenset(self, service):
 		self._otherchargers[service] = dcgenset = DcGenset(self.monitor, service)
 		return dcgenset
+
+	def add_charger(self, service):
+		self._chargers[service] = charger = Charger(self.monitor, service)
+		return charger
 
 	def add_invertercharger(self, service):
 		self._inverterchargers[service] = inverter = InverterCharger(self.monitor, service)
@@ -559,7 +571,7 @@ class ChargerSubsystem(object):
 			and self._acsystem0.discharge_capacity is not None)
 
 	def remove_charger(self, service):
-		for di in (self._solarchargers, self._inverterchargers, self._otherchargers):
+		for di in (self._solarchargers, self._inverterchargers, self._otherchargers, self._chargers):
 			try:
 				del di[service]
 			except KeyError:
@@ -569,10 +581,10 @@ class ChargerSubsystem(object):
 		return iter(chain(self._solarchargers.values(), self._inverterchargers.values(), self._otherchargers.values()))
 
 	def __len__(self):
-		return len(self._solarchargers) + len(self._otherchargers) + len(self._inverterchargers)
+		return len(self._solarchargers) + len(self._otherchargers) + len(self._inverterchargers) + len(self._chargers)
 
 	def __contains__(self, k):
-		return k in self._solarchargers or k in self._inverterchargers or k in self._otherchargers
+		return k in self._solarchargers or k in self._inverterchargers or k in self._otherchargers or k in self._chargers
 
 	@property
 	def has_externalcontrol_support(self):
@@ -602,8 +614,8 @@ class ChargerSubsystem(object):
 	@property
 	def smoothed_current(self):
 		""" Total smoothed current, calculated by adding the smoothed current
-		    of the individual chargers. """
-		return safeadd(*(c.smoothed_current for c in self)) or 0
+		    of the individual chargers, including the uncontrolled ones. """
+		return safeadd(*(c.smoothed_current for c in chain(self, self._chargers.values()))) or 0
 
 	@property
 	def solar_current(self):
@@ -622,7 +634,7 @@ class ChargerSubsystem(object):
 		""" Set the charge voltage on solar chargers and inverter chargers. """
 		if charge_voltage is None:
 			return 0
-		voltage_written = int(len(self) > 0)
+		voltage_written = int(len(self) - len(self._chargers) > 0)
 		for charger in chain(self._solarchargers.values(),
 				self._inverterchargers.values()):
 			# VE.Can chargers get their voltage from the VE.Can interface
@@ -1032,6 +1044,10 @@ class Dvcc(SystemCalcDelegate):
 				'/Link/ChargeCurrent',
 				'/Settings/BmsPresent',
 				'/Settings/ChargeCurrentLimit']),
+			('com.victronenergy.charger', [
+				'/ProductId',
+				'/Dc/0/Current',
+				'/Mgmt/Connection']),
 			('com.victronenergy.inverter', [
 				'/ProductId',
 				'/Dc/0/Current',
@@ -1121,6 +1137,8 @@ class Dvcc(SystemCalcDelegate):
 			self._chargesystem.add_alternator(service)
 		elif service_type == 'dcgenset':
 			self._chargesystem.add_dcgenset(service)
+		elif service_type == 'charger':
+			self._chargesystem.add_charger(service)
 		elif service_type == 'battery':
 			pass # install timer below
 		elif service_type == 'acsystem':

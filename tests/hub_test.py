@@ -2655,6 +2655,74 @@ class TestHubSystem(TestSystemCalcBase):
 				'/Link/ChargeCurrent': 0 },
 		})
 
+	def _add_bms_45a(self):
+		self._add_device('com.victronenergy.battery.ttyO2',
+			product_name='battery',
+			values={
+				'/Dc/0/Voltage': 12.3,
+				'/Dc/0/Current': 5.3,
+				'/Dc/0/Power': 65,
+				'/Soc': 15.3,
+				'/DeviceInstance': 2,
+				'/Info/BatteryLowVoltage': 47,
+				'/Info/MaxChargeCurrent': 45,
+				'/Info/MaxChargeVoltage': 58.2,
+				'/Info/MaxDischargeCurrent': 50})
+
+	def test_dvcc_subtracts_charger_current(self):
+		""" A charger's current is taken off what the Multi may charge with,
+		    as for solar chargers, so together they stay within the limit. """
+		self._add_bms_45a()
+		self._add_device('com.victronenergy.charger.ttyO3', {
+			'/Dc/0/Voltage': 12.6,
+			'/Dc/0/Current': 31},
+			connection='VE.Direct')
+		self._update_values(interval=60000)
+		self._check_external_values({
+			'com.victronenergy.vebus.ttyO1': {
+				'/BatteryOperationalLimits/MaxChargeCurrent': 45 - 31}})
+
+		self._remove_device('com.victronenergy.charger.ttyO3')
+		self._update_values(interval=10000)
+		self._check_external_values({
+			'com.victronenergy.vebus.ttyO1': {
+				'/BatteryOperationalLimits/MaxChargeCurrent': 45}})
+
+	def test_dvcc_does_not_control_chargers(self):
+		""" DVCC only counts a charger's current. It does not monitor the
+		    charger's /Link paths, so it cannot write them, and the charger
+		    is not reported as a controlled solar charger. """
+		self._add_bms_45a()
+		self._add_device('com.victronenergy.charger.ttyO3', {
+			'/Dc/0/Voltage': 12.6,
+			'/Dc/0/Current': 10},
+			connection='VE.Direct')
+		self._update_values(interval=60000)
+		for path in ('/Link/NetworkMode', '/Link/ChargeVoltage', '/Link/ChargeCurrent'):
+			self.assertFalse(self._monitor.seen('com.victronenergy.charger.ttyO3', path))
+		self._check_external_values({
+			'com.victronenergy.vebus.ttyO1': {
+				'/BatteryOperationalLimits/MaxChargeCurrent': 45 - 10}})
+		self._check_values({
+			'/Control/SolarChargeCurrent': 0,
+			'/Control/SolarChargeVoltage': 0})
+
+	def test_dvcc_subtracts_multiple_chargers(self):
+		""" Chargers on VE.Can and elsewhere all count towards the total. """
+		self._add_bms_45a()
+		self._add_device('com.victronenergy.charger.socketcan_can0_vi0_uc1', {
+			'/Dc/0/Voltage': 12.6,
+			'/Dc/0/Current': 20},
+			connection='VE.Can')
+		self._add_device('com.victronenergy.charger.ttyO3', {
+			'/Dc/0/Voltage': 12.6,
+			'/Dc/0/Current': 11},
+			connection='VE.Direct')
+		self._update_values(interval=60000)
+		self._check_external_values({
+			'com.victronenergy.vebus.ttyO1': {
+				'/BatteryOperationalLimits/MaxChargeCurrent': 45 - 20 - 11}})
+
 	def test_internal_maxchargecurrent(self):
 		""" The DVCC assistant allows other assistants to set an internal limit
 		    for the Multi. """
